@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""采集质检：页覆盖、块统计、印刷页码映射、乱码启发式、抽样页渲染。
+用法: qc_report.py <原始pdf> <采集输出目录> [起始页(0计,默认0)] [结束页(0计,默认末页)]
+在输出目录下生成 QC报告.md 和 qc_samples/*.png（供人眼比对）。
+注意：content_list.json 的 page_idx 相对于本次采集的起始页从 0 计。
+"""
+import json
+import random
+import re
+import sys
+from pathlib import Path
+
+import pymupdf
+
+
+def find_outputs(outdir: Path):
+    cl = [p for p in sorted(outdir.rglob("*content_list.json")) if "_v2" not in p.name]
+    md = [p for p in sorted(outdir.rglob("*.md")) if p.name != "QC报告.md"]
+    return (cl[0] if cl else None), (md[0] if md else None)
+
+
+def main(pdf_path, outdir, start=0, end=None):
+    pdf_path, outdir = Path(pdf_path), Path(outdir)
+    pdf = pymupdf.open(pdf_path)
+    end = pdf.page_count - 1 if end is None else end
+    n_range = end - start + 1
+
+    cl_path, md_path = find_outputs(outdir)
+    if not cl_path or not md_path:
+        sys.exit(f"未找到采集产物（content_list.json / .md）于 {outdir}")
+
+    blocks = json.loads(cl_path.read_text(encoding="utf-8"))
+    for b in blocks:
+        if "page_idx" in b:
+            b["page_idx"] = int(b["page_idx"])
+
+    pages_seen = {b["page_idx"] for b in blocks if "page_idx" in b}
+    missing = [start + p + 1 for p in range(n_range) if p not in pages_seen]
+
+    by_type = {}
+    for b in blocks:
+        by_type[b.get("type", "?")] = by_type.get(b.get("type", "?"), 0) + 1
+
+    # 印刷页码映射（page_number 块）：PDF页 → 印刷页
+    page_map = {}
+    for b in blocks:
+        if b.get("type") == "page_number" and str(b.get("text", "")).strip():
+            page_map[start + b["page_idx"] + 1] = str(b["text"]).strip()
+
+    md_text = md_path.read_text(encoding="utf-8")
+    n_tables = md_text.count("<table") + len(re.findall(r"^\|.+\|$", md_text, re.M))
+    n_imgs = len(re.findall(r"!\[[^\]]*\]\(", md_text))
+    weird = len(re.findall(r"[-￰-￿]", md_text))
+    cjk = len(re.findall(r"[一-鿿]", md_text))
+
+    # 抽样页渲染：表格/图片页优先，再随机补足
+    qc_dir = outdir / "qc_samples"
+    qc_dir.mkdir(exist_ok=True)
+    rich_pages = sorted({b["page_idx"] for b in blocks if b.get("type") in ("table", "image")})
+    pool = sorted(pages_seen)
+    random.seed(42)
+    picks = list(dict.fromkeys(
+        rich_pages[:3] + (random.sample(pool, min(5, len(pool))) if pool else [])
+    ))[:8]
+    for p in picks:
+        pix = pdf[start + p].get_pixmap(dpi=150)
+        pix.save(qc_dir / f"page_{start+p+1:04d}.png")
+
+    report = outdir / "QC报告.md"
+    map_lines = [f"  - PDF第{k}页 = 印刷页 {v}" for k, v in sorted(page_map.items())[:10]]
+    lines = [
+        f"# 采集质检报告：{pdf_path.name}",
+        "",
+        f"- 采集范围：PDF 第 {start+1}—{end+1} 页（共 {n_range} 页）；覆盖 {len(pages_seen)} 页",
+        f"- **缺页（PDF页码）**：{missing if missing else '无'}",
+        f"- 内容块统计：{json.dumps(by_type, ensure_ascii=False)}",
+        f"- Markdown：{cjk} 个汉字；表格 {n_tables} 处；图片引用 {n_imgs} 处",
+        f"- 乱码嫌疑字符（私用区）：{weird} 个" + ("　⚠️ 需排查" if weird > 20 else ""),
+        f"- 印刷页码映射（前10条）：",
+        *(map_lines or ["  - （未检出印刷页码）"]),
+        "",
+        "## 人眼抽检（必做）",
+        f"抽样页原图在 `qc_samples/`（表格/图片页优先）：PDF页 {[start+p+1 for p in picks]}",
+        "逐页与 Markdown 对应段落核对：表格行列对应／图注归属／脚注位置／阅读顺序。",
+        "",
+        "- [ ] 抽检页全部通过　核对人：＿＿　日期：＿＿",
+        "- 引擎与参数：MinerU hybrid-engine --effort high",
+    ]
+    report.write_text("\n".join(lines), encoding="utf-8")
+    print(f"报告: {report}")
+    print(f"缺页: {missing if missing else '无'}  块统计: {by_type}")
+    print(f"抽样页(PDF页码): {[start+p+1 for p in picks]} → {qc_dir}")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 3:
+        sys.exit(__doc__)
+    main(
+        sys.argv[1], sys.argv[2],
+        int(sys.argv[3]) if len(sys.argv) > 3 else 0,
+        int(sys.argv[4]) if len(sys.argv) > 4 else None,
+    )
