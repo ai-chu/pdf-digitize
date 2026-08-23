@@ -15,6 +15,8 @@ if [ ! -x "$VENV/bin/mineru" ]; then
 fi
 source "$VENV/bin/activate"
 export MINERU_MODEL_SOURCE="${MINERU_MODEL_SOURCE:-modelscope}"
+# mineru 默认单文档等待超时仅 3600s，约120页以上的书（high档 20-30s/页）必超时失败——放宽到 6h
+export MINERU_TASK_RESULT_TIMEOUT_SECONDS="${MINERU_TASK_RESULT_TIMEOUT_SECONDS:-21600}"
 
 ARGS=(-p "$PDF" -o "$OUT" -b hybrid-engine --effort high)
 [ -n "$START" ] && ARGS+=(-s "$START")
