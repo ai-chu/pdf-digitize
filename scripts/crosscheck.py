@@ -120,6 +120,7 @@ def mineru_page_text(outdir: Path, page_idx: int):
         if b.get("type") in ("page_number", "footer", "header"):
             continue
         parts.append(str(b.get("text", "")))
+        parts.extend(str(x) for x in (b.get("list_items") or []))
         if b.get("type") == "table":
             parts.append(str(b.get("table_body", "")))
     return "\n".join(parts)

@@ -61,12 +61,16 @@ def main(pdf_path, outdir, start=0, end=None):
         p = b.get("page_idx")
         if p is None:
             continue
-        t, txt = b.get("type"), str(b.get("text", ""))
+        t = b.get("type")
+        txt = str(b.get("text", "")) + "".join(str(x) for x in (b.get("list_items") or []))
         page_text_len[p] = page_text_len.get(p, 0) + len(txt)
+        # image 块是原图切出保存、无转写损失，不算风险；chart/表格是模型转写、要核
         if t == "table":
             risk.setdefault(p, set()).add("表格")
-        elif t == "image":
-            risk.setdefault(p, set()).add("图/结构图")
+        elif t == "chart":
+            risk.setdefault(p, set()).add("图表转述")
+        elif t == "equation":
+            risk.setdefault(p, set()).add("公式")
         if PUA.search(txt):
             risk.setdefault(p, set()).add("乱码嫌疑")
         if txt.count("$") >= 4:

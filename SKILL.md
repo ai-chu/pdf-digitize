@@ -38,6 +38,23 @@ bash ~/.claude/skills/pdf-digitize/scripts/digitize.sh <PDF路径> <输出目录
 
 起止页从 0 计。全量采集省略页码参数。多本书排队跑就逐本调用（后台执行，别并行——内存会爆）。
 
+### 第 2.5 步：空块修补链（全自动，整册采集后必跑）
+
+```bash
+python3 ~/.claude/skills/pdf-digitize/scripts/heal.py <PDF路径> <输出目录根>            # ① 粗修
+python3 ~/.claude/skills/pdf-digitize/scripts/verify_empty.py <PDF路径> <输出目录根>    # ② 分类残留
+python3 ~/.claude/skills/pdf-digitize/scripts/heal_targeted.py <PDF路径> <输出目录根>   # ③ 块级精修
+```
+
+**背景知识（2026-08-23 两册 473 页实测）**——content_list 里"空块"有三种，处置不同：
+1. **偶发转写失败**（长批次 VLM 偶发返回空，约占页面 15%）→ ① 聚簇重跑可修
+2. **跨页合并占位**（段落并入前页块，本页留空壳，**良性设计**）→ ② 用 qwen 裁片转写＋全书检索区分出来，不动
+3. **真丢失残留** → ③ 单页重跑后只回填与空块 bbox 重叠的内容，避免与前页合并内容重复
+
+**关键字段陷阱**：list 块的内容在 `list_items` 字段（不在 `text`）；chart/image 的转写在
+`content` 字段。凡是读 content_list 的代码都必须三处齐查，否则会把完好内容误判为丢失。
+修补链会重建 .md（含表格/图表转写/公式，原件 .bak 备份）；content_list 永远是权威数据源。
+
 ### 第 3 步：机器质检＋风险定位（全自动）
 
 ```bash
