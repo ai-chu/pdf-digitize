@@ -53,15 +53,43 @@ def main(pdf_path, outdir, start=0, end=None):
     weird = len(re.findall(r"[-￰-￿]", md_text))
     cjk = len(re.findall(r"[一-鿿]", md_text))
 
-    # 抽样页渲染：表格/图片页优先，再随机补足
+    # 风险定位：按块类型与内容特征标记可疑页（终审只看这些页）
+    PUA = re.compile("[\ue000-\uf8ff\ufff0-\uffff]")
+    risk = {}  # page_idx -> set(reasons)
+    page_text_len = {}
+    for b in blocks:
+        p = b.get("page_idx")
+        if p is None:
+            continue
+        t, txt = b.get("type"), str(b.get("text", ""))
+        page_text_len[p] = page_text_len.get(p, 0) + len(txt)
+        if t == "table":
+            risk.setdefault(p, set()).add("表格")
+        elif t == "image":
+            risk.setdefault(p, set()).add("图/结构图")
+        if PUA.search(txt):
+            risk.setdefault(p, set()).add("乱码嫌疑")
+        if txt.count("$") >= 4:
+            risk.setdefault(p, set()).add("公式密集")
+    for p in [q for q in pages_seen if 2 < q < n_range - 3]:
+        if page_text_len.get(p, 0) < 50:
+            risk.setdefault(p, set()).add("内容异常少")
+
+    risk_pages = [
+        {"pdf_page": start + p + 1, "page_idx": p, "reasons": sorted(risk[p])}
+        for p in sorted(risk)
+    ]
+    (outdir / "risk_pages.json").write_text(
+        json.dumps(risk_pages, ensure_ascii=False, indent=1), encoding="utf-8")
+
+    # 可疑页全部渲染（人眼/交叉验证共用），再随机补 3 页对照
     qc_dir = outdir / "qc_samples"
     qc_dir.mkdir(exist_ok=True)
-    rich_pages = sorted({b["page_idx"] for b in blocks if b.get("type") in ("table", "image")})
     pool = sorted(pages_seen)
     random.seed(42)
     picks = list(dict.fromkeys(
-        rich_pages[:3] + (random.sample(pool, min(5, len(pool))) if pool else [])
-    ))[:8]
+        sorted(risk) + (random.sample(pool, min(3, len(pool))) if pool else [])
+    ))
     for p in picks:
         pix = pdf[start + p].get_pixmap(dpi=150)
         pix.save(qc_dir / f"page_{start+p+1:04d}.png")
@@ -79,17 +107,27 @@ def main(pdf_path, outdir, start=0, end=None):
         f"- 印刷页码映射（前10条）：",
         *(map_lines or ["  - （未检出印刷页码）"]),
         "",
-        "## 人眼抽检（必做）",
-        f"抽样页原图在 `qc_samples/`（表格/图片页优先）：PDF页 {[start+p+1 for p in picks]}",
-        "逐页与 Markdown 对应段落核对：表格行列对应／图注归属／脚注位置／阅读顺序。",
+        f"## 可疑页清单（共 {len(risk_pages)} 页，终审只需看这些）",
+        *(
+            [f"- PDF第{r['pdf_page']}页：{('、'.join(r['reasons']))}" for r in risk_pages]
+            or ["- 无可疑页"]
+        ),
         "",
-        "- [ ] 抽检页全部通过　核对人：＿＿　日期：＿＿",
+        "## 终审（三选一）",
+        f"1. **云端交叉验证**（推荐大批量）：只发上述 {len(risk_pages)} 页，"
+        f"约 {max(1, len(risk_pages)) * 0.009:.2f} 元（PaddleOCR-VL 9元/千页）。"
+        "运行 crosscheck.py，两引擎一致的页自动通过，分歧页才需人眼。",
+        f"2. **人眼核查**：只看 `qc_samples/` 里的可疑页原图，与 Markdown 对应段落比对。",
+        "3. **跳过**：产物标注为「未终审草稿」。",
+        "",
+        "- [ ] 终审通过　方式：＿＿　核对人：＿＿　日期：＿＿",
         "- 引擎与参数：MinerU hybrid-engine --effort high",
     ]
     report.write_text("\n".join(lines), encoding="utf-8")
     print(f"报告: {report}")
     print(f"缺页: {missing if missing else '无'}  块统计: {by_type}")
-    print(f"抽样页(PDF页码): {[start+p+1 for p in picks]} → {qc_dir}")
+    print(f"可疑页(PDF页码): {[r['pdf_page'] for r in risk_pages]}")
+    print(f"渲染页: {[start+p+1 for p in picks]} → {qc_dir}")
 
 
 if __name__ == "__main__":
