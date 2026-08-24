@@ -8,7 +8,7 @@
 
 Token: 在 https://mineru.net 注册后于 API 管理页创建，写入 ~/.config/pdf-digitize/env：
   MINERU_API_TOKEN=eyJ...
-限制: 单文件 ≤200MB 且 ≤600 页；超出请先用 pymupdf 拆分。
+限制: 单文件 ≤200MB；页数超 200 自动切段同批上传、结果按页偏移合并（API 实测上限 200 页/文件）。
 """
 import argparse
 import functools
@@ -59,66 +59,102 @@ def main():
         sys.exit("缺 MINERU_API_TOKEN。到 https://mineru.net 注册（免费）→ API 管理页创建 token，"
                  "写入 ~/.config/pdf-digitize/env")
 
+    import subprocess
+    import tempfile
+    import pymupdf
+
     pdf = Path(a.pdf); outroot = Path(a.outroot)
     book = pdf.stem
-    size_mb = pdf.stat().st_size / 1048576
-    if size_mb > 200:
-        sys.exit(f"文件 {size_mb:.0f}MB 超过 200MB 限制，请先拆分")
-    print(f"⚠️ 云端路由：整本《{book}》将上传 mineru.net——确认非隐私材料。")
+    src = pymupdf.open(pdf)
+    n = src.page_count
+    print(f"⚠️ 云端路由：整本《{book}》（{n} 页）将上传 mineru.net——确认非隐私材料。")
 
-    # 1. 申请上传链接
-    sub = req_json(f"{API}/file-urls/batch", {
-        "files": [{"name": pdf.name, "is_ocr": True, "data_id": book}],
-        "enable_formula": True, "enable_table": True,
-        "language": a.lang, "model_version": "vlm",
-    }, token)
-    batch_id = sub["data"]["batch_id"]
-    up_url = sub["data"]["file_urls"][0]
+    with tempfile.TemporaryDirectory() as td:
+        # API 单文件实测上限 200 页（官方文档写 600，以实测为准）——超限自动切段
+        parts = []  # (part_pdf_path, page_offset)
+        if n <= 200:
+            parts = [(pdf, 0)]
+        else:
+            for i, s0 in enumerate(range(0, n, 200), 1):
+                e0 = min(s0 + 200, n) - 1
+                pp = Path(td) / f"{book}.part{i}.pdf"
+                d = pymupdf.open(); d.insert_pdf(src, from_page=s0, to_page=e0)
+                d.save(pp); d.close()
+                parts.append((pp, s0))
+            print(f"超 200 页，切为 {len(parts)} 段同批上传")
 
-    # 2. PUT 上传（不设 Content-Type）
-    print(f"上传 {size_mb:.0f}MB …")
-    r = urllib.request.Request(up_url, pdf.read_bytes(), method="PUT")
-    with urllib.request.urlopen(r, timeout=1800) as resp:
-        resp.read()
-    print(f"已提交，batch_id={batch_id}，轮询中…")
+        # 1. 一次申请全部上传链接
+        sub = req_json(f"{API}/file-urls/batch", {
+            "files": [{"name": p.name, "is_ocr": True, "data_id": f"{book}#{off}"}
+                      for p, off in parts],
+            "enable_formula": True, "enable_table": True,
+            "language": a.lang, "model_version": "vlm",
+        }, token)
+        batch_id = sub["data"]["batch_id"]
+        urls = sub["data"]["file_urls"]
 
-    # 3. 轮询
-    zip_url = None
-    for i in range(360):  # 最长 90 分钟
-        time.sleep(15)
-        q = req_json(f"{API}/extract-results/batch/{batch_id}", token=token)
-        res = (q["data"]["extract_result"] or [{}])[0]
-        st = res.get("state")
-        if st == "done":
-            zip_url = res["full_zip_url"]; break
-        if st == "failed":
-            sys.exit(f"云端解析失败: {res.get('err_msg', res)}")
-        prog = res.get("extract_progress") or {}
-        if i % 8 == 0:
-            print(f"  {st} {prog.get('extracted_pages','?')}/{prog.get('total_pages','?')} 页")
-    if not zip_url:
-        sys.exit("轮询超时（90 分钟）")
+        # 2. PUT 上传。必须用 curl：urllib 会自动附加 Content-Type 头，
+        #    与 OSS 预签名 URL 的签名不符导致 403。失败再试直连（防代理劫持 OSS 域名）。
+        for (p, off), u in zip(parts, urls):
+            print(f"上传 {p.name}（{p.stat().st_size//1048576}MB）…")
+            r = subprocess.run(["curl", "-sS", "-f", "-X", "PUT", "-T", str(p), u],
+                               capture_output=True, text=True)
+            if r.returncode != 0:
+                r = subprocess.run(["curl", "--noproxy", "*", "-sS", "-f", "-X", "PUT",
+                                    "-T", str(p), u], capture_output=True, text=True)
+            if r.returncode != 0:
+                sys.exit(f"上传失败 {p.name}: {r.stderr[-300:]}")
+        print(f"已提交 {len(parts)} 段，batch_id={batch_id}，轮询中…")
 
-    # 4. 下载解包并归一化命名（对齐本地产物约定）
-    dest = outroot / book / "cloud"
-    dest.mkdir(parents=True, exist_ok=True)
-    print("下载结果包…")
-    with urllib.request.urlopen(zip_url, timeout=600) as resp:
-        zf = zipfile.ZipFile(io.BytesIO(resp.read()))
-    zf.extractall(dest)
-    for f in dest.rglob("*"):
-        if f.is_file() and f.parent != dest and f.suffix in (".md", ".json"):
-            shutil.move(str(f), dest / f.name)
-    imgs = next((d for d in dest.rglob("images") if d.is_dir() and d.parent != dest), None)
-    if imgs:
-        shutil.move(str(imgs), dest / "images")
-    for pat, target in ((r"*content_list.json", f"{book}_content_list.json"),
-                        (r"*.md", f"{book}.md")):
-        cands = [p for p in dest.glob(pat) if p.name != target and "QC" not in p.name]
-        if cands and not (dest / target).exists():
-            cands[0].rename(dest / target)
-    print(f"完成 → {dest}")
-    print(f"续接: qc_report.py / heal.py / index.py 均可直接使用（自动识别 cloud/ 子目录）")
+        # 3. 轮询直到全部 done
+        results = None
+        for i in range(360):
+            time.sleep(15)
+            q = req_json(f"{API}/extract-results/batch/{batch_id}", token=token)
+            rs = q["data"]["extract_result"] or []
+            fails = [r for r in rs if r.get("state") == "failed"]
+            if fails:
+                sys.exit(f"云端解析失败: {fails[0].get('err_msg', fails[0])}")
+            if rs and all(r.get("state") == "done" for r in rs):
+                results = rs; break
+            if i % 8 == 0:
+                done = sum(1 for r in rs if r.get("state") == "done")
+                print(f"  {done}/{len(parts)} 段完成")
+        if not results:
+            sys.exit("轮询超时（90 分钟）")
+
+        # 4. 下载各段、按页偏移合并、归一化命名
+        dest = outroot / book / "cloud"
+        if dest.exists():
+            shutil.rmtree(dest)
+        (dest / "images").mkdir(parents=True)
+        offset_of = {str(r_.get("data_id", "")): int(str(r_.get("data_id", "#0")).split("#")[-1])
+                     for r_ in results}
+        merged_blocks, merged_md = [], []
+        for r_ in sorted(results, key=lambda x: offset_of.get(str(x.get("data_id")), 0)):
+            off = offset_of.get(str(r_.get("data_id")), 0)
+            print(f"下载段 offset={off} …")
+            with urllib.request.urlopen(r_["full_zip_url"], timeout=600) as resp:
+                zf = zipfile.ZipFile(io.BytesIO(resp.read()))
+            pd = Path(td) / f"part_{off}"
+            zf.extractall(pd)
+            cl = next((f for f in pd.rglob("*content_list.json") if "_v2" not in f.name), None)
+            md = next((f for f in pd.rglob("*.md")), None)
+            if not cl:
+                sys.exit(f"段 offset={off} 结果包内未找到 content_list")
+            blocks = json.loads(cl.read_text(encoding="utf-8"))
+            for b in blocks:
+                b["page_idx"] = int(b["page_idx"]) + off
+            merged_blocks.extend(blocks)
+            if md:
+                merged_md.append(md.read_text(encoding="utf-8"))
+            for im in pd.rglob("images/*"):
+                shutil.copy2(im, dest / "images" / im.name)
+        (dest / f"{book}_content_list.json").write_text(
+            json.dumps(merged_blocks, ensure_ascii=False, indent=1), encoding="utf-8")
+        (dest / f"{book}.md").write_text("\n\n".join(merged_md), encoding="utf-8")
+    print(f"完成 → {dest}（{len(merged_blocks)} 块，覆盖 {n} 页）")
+    print("续接: qc_report.py / heal.py / index.py 均可直接使用（自动识别 cloud/ 子目录）")
 
 
 if __name__ == "__main__":

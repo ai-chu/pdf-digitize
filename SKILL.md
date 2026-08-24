@@ -16,7 +16,7 @@ description: PDF 书籍/课标/教材高保真采集（忠实副本）。把扫�
 | 路线 | 何时用 | 说明 |
 |---|---|---|
 | **主路线：MinerU（本地）** | 默认，一切常规书籍 | `hybrid-engine --effort high`，Apple Silicon 本地推理，数据不出机。环境在 `~/tools/pdf2md/.venv`，没有就先跑 `scripts/setup.sh` |
-| **云端路由：mineru.net API** | 公开出版物批量赶时间 | `cloud_digitize.py <PDF> <目录根>`，每日 2000 页免费高优额度，同引擎同产物格式（落 `<书名>/cloud/`，修补/质检/索引链直接续接）。需 `MINERU_API_TOKEN`（mineru.net 免费注册）。**整本上传云端——隐私材料禁用** |
+| **云端路由：mineru.net API** | 公开出版物批量赶时间 | `cloud_digitize.py <PDF> <目录根>`，每日 2000 页免费高优额度，超 200 页自动切段合并（已实测 266 页约 2 分钟出全书）。产物落 `<书名>/cloud/`，修补/质检/索引链直接续接。需 `MINERU_API_TOKEN`（mineru.net 免费注册）。**整本上传云端——隐私材料禁用** |
 | 备选 B：百度文档解析 API（PaddleOCR-VL） | 精度存疑需第二意见交叉验证 | OmniDocBench 榜首；约 9 元/千页，1000 页免费测试；异步接口 2QPS |
 | 兜底：macOS Vision OCR（ocrbin） | 只要全文检索索引、不要结构 | 快且免费，但表格/图/结构全丢——**不得称为忠实副本** |
 
