@@ -81,7 +81,7 @@ def rebuild_md(blocks, book_dir_name):
 def main(pdf, outroot):
     pdf, outroot = Path(pdf), Path(outroot)
     book = pdf.stem
-    ha = next((outroot / book / d for d in ("hybrid_auto", "vlm", "auto")
+    ha = next((outroot / book / d for d in ("hybrid_auto", "vlm", "cloud", "auto")
                if (outroot / book / d).exists()), None)
     if ha is None:
         sys.exit(f"未找到采集输出目录（hybrid_auto/vlm/auto）于 {outroot / book}")

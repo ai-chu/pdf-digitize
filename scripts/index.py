@@ -20,7 +20,7 @@ from pathlib import Path
 print = functools.partial(print, flush=True)
 
 MODEL_ID = "BAAI/bge-m3"
-SUBDIRS = ("hybrid_auto", "vlm", "auto")
+SUBDIRS = ("hybrid_auto", "vlm", "cloud", "auto")
 MIN_CHARS = 20          # 过短块并入前块
 MAX_CHARS = 1200        # 过长块按句切
 
