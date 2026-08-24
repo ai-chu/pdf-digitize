@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""云端采集路由：mineru.net 官方 API（每日 2000 页免费高优额度，同引擎同产物格式）。
-整本 PDF 上传云端解析——**涉隐私/敏感材料禁用**，只用于公开出版物。
+"""云端采集路由（双服务商可选）。整本 PDF 上传云端——**涉隐私/敏感材料禁用**。
 
-用法: cloud_digitize.py <PDF路径> <输出目录根> [--lang ch]
+用法: cloud_digitize.py <PDF路径> <输出目录根> [--provider mineru|baidu] [--lang ch]
 产物: <输出目录根>/<书名>/cloud/ 下的 md ＋ content_list ＋ images（与本地路线同构，
       修补链/质检/索引脚本可直接续接）。
 
-Token: 在 https://mineru.net 注册后于 API 管理页创建，写入 ~/.config/pdf-digitize/env：
-  MINERU_API_TOKEN=eyJ...
-限制: 单文件 ≤200MB；页数超 200 自动切段同批上传、结果按页偏移合并（API 实测上限 200 页/文件）。
+服务商（密钥都写 ~/.config/pdf-digitize/env）:
+  mineru（默认）: 免费 2000 页/日高优额度。MINERU_API_TOKEN=...（mineru.net 注册）
+                  单文件实测上限 200 页，超限自动切段合并。
+  baidu:          付费兜底（约 9 元/千页，1000 页免费测试），mineru 额度用尽时切换。
+                  BAIDU_OCR_AK=... / BAIDU_OCR_SK=...（百度智能云开通"文档解析 PaddleOCR-VL"）
+                  单文件 ≤500 页/≤100MB，超限自动切段合并。
+                  ⚠️ 百度通道按官方文档实现、待首次实跑验证字段。
 """
 import argparse
 import functools
@@ -48,16 +51,82 @@ def req_json(url, data=None, token=None, method=None):
     return out
 
 
+# ---------- 服务商 B：百度 文档解析（PaddleOCR-VL） ----------
+def baidu_token():
+    import urllib.parse as up
+    ak, sk = os.environ.get("BAIDU_OCR_AK"), os.environ.get("BAIDU_OCR_SK")
+    if not (ak and sk):
+        sys.exit("缺 BAIDU_OCR_AK / BAIDU_OCR_SK（百度智能云开通'文档解析 PaddleOCR-VL'后创建，"
+                 "写入 ~/.config/pdf-digitize/env）")
+    r = req_json("https://aip.baidubce.com/oauth/2.0/token?grant_type=client_credentials"
+                 f"&client_id={up.quote(ak)}&client_secret={up.quote(sk)}", data={})
+    return r["access_token"]
+
+
+def baidu_parse_part(tok, part_pdf: Path):
+    """提交单段 PDF → 轮询 → 返回 (markdown文本, 解析JSON)。"""
+    import base64
+    import urllib.parse as up
+    base = "https://aip.baidubce.com/rest/2.0/brain/online/v2/paddle-vl-parser"
+    body = up.urlencode({"file_data": base64.b64encode(part_pdf.read_bytes()).decode(),
+                         "file_name": part_pdf.name}).encode()
+    hdr = {"Content-Type": "application/x-www-form-urlencoded"}
+    r = urllib.request.Request(f"{base}/task?access_token={tok}", body, hdr)
+    with urllib.request.urlopen(r, timeout=600) as resp:
+        sub = json.loads(resp.read())
+    task_id = (sub.get("result") or {}).get("task_id") or sub.get("task_id")
+    if not task_id:
+        sys.exit(f"百度提交失败: {json.dumps(sub, ensure_ascii=False)[:300]}")
+    qbody = up.urlencode({"task_id": task_id}).encode()
+    for _ in range(240):
+        time.sleep(10)
+        r = urllib.request.Request(f"{base}/task/query?access_token={tok}", qbody, hdr)
+        with urllib.request.urlopen(r, timeout=120) as resp:
+            q = json.loads(resp.read())
+        res = q.get("result") or q
+        st = str(res.get("status", "")).lower()
+        if "success" in st or res.get("markdown_url"):
+            md = ""
+            if res.get("markdown_url"):
+                with urllib.request.urlopen(res["markdown_url"], timeout=300) as u:
+                    md = u.read().decode("utf-8", "replace")
+            pj = {}
+            if res.get("parse_result_url"):
+                with urllib.request.urlopen(res["parse_result_url"], timeout=300) as u:
+                    pj = json.loads(u.read())
+            return md, pj
+        if "fail" in st or res.get("task_error"):
+            sys.exit(f"百度解析失败: {json.dumps(res, ensure_ascii=False)[:300]}")
+    sys.exit("百度轮询超时（40 分钟）")
+
+
+def baidu_json_to_blocks(pj, page_offset):
+    """把百度解析 JSON 尽力映射为 content_list 块结构（字段以首跑实测为准）。"""
+    blocks = []
+    for page in (pj.get("pages") or pj.get("result", {}).get("pages") or []):
+        pidx = int(page.get("page_num", page.get("page_id", 1))) - 1 + page_offset
+        for el in (page.get("layouts") or page.get("elements") or []):
+            t = str(el.get("type", "text")).lower()
+            b = {"page_idx": pidx, "bbox": el.get("position") or el.get("bbox") or [0, 0, 0, 0]}
+            if "table" in t:
+                b["type"] = "table"
+                b["table_body"] = el.get("markdown") or el.get("html") or el.get("text", "")
+            elif "image" in t or "figure" in t:
+                b["type"] = "image"; b["img_path"] = el.get("image_url", "")
+                b["content"] = el.get("text", "")
+            else:
+                b["type"] = "text"; b["text"] = el.get("text", "") or el.get("markdown", "")
+            blocks.append(b)
+    return blocks
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("pdf"); ap.add_argument("outroot")
+    ap.add_argument("--provider", default="mineru", choices=["mineru", "baidu"])
     ap.add_argument("--lang", default="ch")
     a = ap.parse_args()
     load_env()
-    token = os.environ.get("MINERU_API_TOKEN")
-    if not token:
-        sys.exit("缺 MINERU_API_TOKEN。到 https://mineru.net 注册（免费）→ API 管理页创建 token，"
-                 "写入 ~/.config/pdf-digitize/env")
 
     import subprocess
     import tempfile
@@ -67,6 +136,40 @@ def main():
     book = pdf.stem
     src = pymupdf.open(pdf)
     n = src.page_count
+
+    if a.provider == "baidu":
+        print(f"⚠️ 云端路由（百度）：整本《{book}》（{n} 页）将上传百度智能云——确认非隐私材料。")
+        tok = baidu_token()
+        dest = outroot / book / "cloud"
+        if dest.exists():
+            shutil.rmtree(dest)
+        (dest / "images").mkdir(parents=True)
+        merged_blocks, merged_md = [], []
+        with tempfile.TemporaryDirectory() as td:
+            step = 500
+            for i, s0 in enumerate(range(0, n, step), 1):
+                e0 = min(s0 + step, n) - 1
+                if n <= step:
+                    pp = pdf
+                else:
+                    pp = Path(td) / f"{book}.part{i}.pdf"
+                    d = pymupdf.open(); d.insert_pdf(src, from_page=s0, to_page=e0)
+                    d.save(pp); d.close()
+                print(f"提交段 {s0+1}-{e0+1} 页 …")
+                md, pj = baidu_parse_part(tok, pp)
+                merged_md.append(md)
+                merged_blocks.extend(baidu_json_to_blocks(pj, s0))
+        (dest / f"{book}_content_list.json").write_text(
+            json.dumps(merged_blocks, ensure_ascii=False, indent=1), encoding="utf-8")
+        (dest / f"{book}.md").write_text("\n\n".join(merged_md), encoding="utf-8")
+        print(f"完成 → {dest}（{len(merged_blocks)} 块；百度图片为 30 天有效外链，"
+              "如需长存请另行下载 images）")
+        return
+
+    token = os.environ.get("MINERU_API_TOKEN")
+    if not token:
+        sys.exit("缺 MINERU_API_TOKEN。到 https://mineru.net 注册（免费）→ API 管理页创建 token，"
+                 "写入 ~/.config/pdf-digitize/env；或改用 --provider baidu")
     print(f"⚠️ 云端路由：整本《{book}》（{n} 页）将上传 mineru.net——确认非隐私材料。")
 
     with tempfile.TemporaryDirectory() as td:
