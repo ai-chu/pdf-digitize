@@ -31,6 +31,21 @@ macOS Vision OCR 只输出文字流：表格行列关系全丢、结构图打散
 | `scripts/crosscheck.py` | 云端交叉验证（PaddleOCR-VL / qwen-vl-ocr 第二意见） |
 | `scripts/index.py` | 向量索引 build/query（BGE-M3＋LanceDB，印刷页级引用） |
 
+
+## 密钥配置（全部可选——核心采集零密钥）
+
+本工具**本地采集、修补、质检、向量索引全程不需要任何密钥**。以下增值通道按需配置，
+密钥一律写入本机 `~/.config/pdf-digitize/env`（建议 `chmod 600`），每行 `KEY=value`：
+
+| 功能 | 密钥 | 获取方式 | 费用 |
+|---|---|---|---|
+| mineru.net 云端采集 | `MINERU_API_TOKEN` | mineru.net 免费注册 → API 管理页创建 | 免费 2000 页/日 |
+| 百度云端采集/交叉验证 | `BAIDU_OCR_AK` ＋ `BAIDU_OCR_SK` | 百度智能云 → 实名认证 → 开通"文档解析(PaddleOCR-VL)" → 应用管理创建应用 | 1000 页免费，后约 9 元/千页 |
+| 通义交叉验证 | `DASHSCOPE_API_KEY` | 阿里云百炼控制台 | 按 token，约几厘/页 |
+
+**安全须知**：密钥只存本机配置文件，勿写入任何仓库、文档或对话记录；泄露后立即在对应控制台轮换。
+缺密钥时相关脚本会给出明确提示与本表指引，不影响核心功能。
+
 ## 装到另一台电脑
 
 ```bash
