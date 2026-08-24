@@ -18,7 +18,11 @@ export MINERU_MODEL_SOURCE="${MINERU_MODEL_SOURCE:-modelscope}"
 # mineru 默认单文档等待超时仅 3600s，约120页以上的书（high档 20-30s/页）必超时失败——放宽到 6h
 export MINERU_TASK_RESULT_TIMEOUT_SECONDS="${MINERU_TASK_RESULT_TIMEOUT_SECONDS:-21600}"
 
-ARGS=(-p "$PDF" -o "$OUT" -b hybrid-engine --effort high)
+# 默认 vlm-engine：Apple 芯片装有 mlx-vlm 时自动 MLX 加速（实测比 hybrid 批量快约 3 倍）。
+# 注意 mlx-vlm 需 transformers>=5.1，与 hybrid-engine（需 <5）互斥——同一环境二选一。
+BACKEND="${MINERU_BACKEND:-vlm-engine}"
+ARGS=(-p "$PDF" -o "$OUT" -b "$BACKEND")
+[[ "$BACKEND" == hybrid* ]] && ARGS+=(--effort high)
 [ -n "$START" ] && ARGS+=(-s "$START")
 [ -n "$END" ] && ARGS+=(-e "$END")
 

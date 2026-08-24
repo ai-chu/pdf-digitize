@@ -28,7 +28,11 @@ def overlap(a, b):
 def main(pdf, outroot):
     pdf, outroot = Path(pdf), Path(outroot)
     book = pdf.stem
-    ha = outroot / book / "hybrid_auto"
+    ha = next((outroot / book / d for d in ("hybrid_auto", "vlm", "auto")
+               if (outroot / book / d).exists()), None)
+    if ha is None:
+        sys.exit(f"未找到采集输出目录（hybrid_auto/vlm/auto）于 {outroot / book}")
+    backend = "vlm-engine" if ha.name == "vlm" else "hybrid-engine"
     loss_f = outroot / book / "real_loss_pages.json"
     if not loss_f.exists():
         sys.exit("缺 real_loss_pages.json，先跑 verify_empty.py")
@@ -49,14 +53,14 @@ def main(pdf, outroot):
                        and not any(str(x).strip() for x in (b.get("list_items") or []))]
             if not targets:
                 continue
-            r = subprocess.run(["mineru", "-p", str(pdf), "-o", td, "-s", str(p),
-                                "-e", str(p), "-b", "hybrid-engine", "--effort", "high"],
+            r = subprocess.run(["mineru", "-p", str(pdf), "-o", td, "-s", str(p), "-e", str(p), "-b", backend]
+                               + (["--effort", "high"] if backend.startswith("hybrid") else []),
                                capture_output=True, text=True)
-            sub_cl = Path(td) / book / "hybrid_auto" / f"{book}_content_list.json"
+            sub_cl = Path(td) / book / ha.name / f"{book}_content_list.json"
             if not sub_cl.exists():
                 unresolved.append(pg); print(f"  p{pg} 重跑失败"); continue
             sub = json.loads(sub_cl.read_text(encoding="utf-8"))
-            sub_img = Path(td) / book / "hybrid_auto" / "images"
+            sub_img = Path(td) / book / ha.name / "images"
             if sub_img.exists():
                 for f in sub_img.iterdir():
                     shutil.copy2(f, ha / "images" / f.name)

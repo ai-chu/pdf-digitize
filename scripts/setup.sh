@@ -35,7 +35,9 @@ if [ ! -d "$VENV_DIR" ]; then
   "$UV" venv --python "$PY" "$VENV_DIR"
 fi
 source "$VENV_DIR/bin/activate"
-"$UV" pip install -U "mineru[core]" pymupdf
+# mlx 扩展：Apple 芯片 MLX 加速（默认引擎 vlm-engine，约快 3 倍）
+# 注意：mlx-vlm 依赖 transformers>=5.1，与 hybrid-engine 互斥
+"$UV" pip install -U "mineru[core,mlx]" pymupdf sentence-transformers lancedb
 
 # 4. 国内网络默认走 ModelScope 下载模型（首跑自动下载约 2-4GB）
 echo ""

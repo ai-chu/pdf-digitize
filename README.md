@@ -1,6 +1,9 @@
-# pdf-digitize — PDF 书籍高保真采集 skill
+# pdf-digitize — PDF → 三通道语料库 skill
 
-把课标、教材、扫描书 PDF 转成**忠实副本**：结构化 Markdown＋表格＋切图＋页码索引＋质检报告。
+把课标、教材、扫描书 PDF 转成**三通道语料库**：
+①精确通道（结构化忠实副本：Markdown＋表格＋切图＋印刷页映射）
+②向量通道（BGE-M3＋LanceDB 本地语义索引，命中直接引用到印刷页）
+③结构通道（书→页→块层级 JSON）。附质检报告与自动修补链。全链本地免费。
 
 ## 为什么不用 macOS 自带 OCR
 
@@ -23,7 +26,10 @@ macOS Vision OCR 只输出文字流：表格行列关系全丢、结构图打散
 | `scripts/setup.sh` | 一次性环境安装（幂等） |
 | `scripts/probe.py` | 勘察：页数/文字层/扫描原生 dpi |
 | `scripts/digitize.sh` | 采集主命令 |
-| `scripts/qc_report.py` | 质检报告＋抽样页渲染 |
+| `scripts/qc_report.py` | 质检报告＋风险定位＋抽样页渲染 |
+| `scripts/heal.py` / `verify_empty.py` / `heal_targeted.py` | 空块修补链（粗修→分类→块级精修） |
+| `scripts/crosscheck.py` | 云端交叉验证（PaddleOCR-VL / qwen-vl-ocr 第二意见） |
+| `scripts/index.py` | 向量索引 build/query（BGE-M3＋LanceDB，印刷页级引用） |
 
 ## 装到另一台电脑
 

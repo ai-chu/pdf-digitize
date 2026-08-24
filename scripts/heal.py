@@ -81,7 +81,11 @@ def rebuild_md(blocks, book_dir_name):
 def main(pdf, outroot):
     pdf, outroot = Path(pdf), Path(outroot)
     book = pdf.stem
-    ha = outroot / book / "hybrid_auto"
+    ha = next((outroot / book / d for d in ("hybrid_auto", "vlm", "auto")
+               if (outroot / book / d).exists()), None)
+    if ha is None:
+        sys.exit(f"未找到采集输出目录（hybrid_auto/vlm/auto）于 {outroot / book}")
+    backend = "vlm-engine" if ha.name == "vlm" else "hybrid-engine"
     cl_path = ha / f"{book}_content_list.json"
     blocks = json.loads(cl_path.read_text(encoding="utf-8"))
     for b in blocks:
@@ -96,15 +100,15 @@ def main(pdf, outroot):
     with tempfile.TemporaryDirectory() as td:
         for s, e in clusters(bad):
             r = subprocess.run(
-                ["mineru", "-p", str(pdf), "-o", td, "-s", str(s), "-e", str(e),
-                 "-b", "hybrid-engine", "--effort", "high"],
+                ["mineru", "-p", str(pdf), "-o", td, "-s", str(s), "-e", str(e), "-b", backend]
+                + (["--effort", "high"] if backend.startswith("hybrid") else []),
                 capture_output=True, text=True)
-            sub_cl = Path(td) / book / "hybrid_auto" / f"{book}_content_list.json"
+            sub_cl = Path(td) / book / ha.name / f"{book}_content_list.json"
             if not sub_cl.exists():
                 print(f"  区间 {s+1}-{e+1} 重跑失败，跳过：{r.stderr[-200:]}"); continue
             sub = json.loads(sub_cl.read_text(encoding="utf-8"))
             # 图片资产并入主目录
-            sub_img = Path(td) / book / "hybrid_auto" / "images"
+            sub_img = Path(td) / book / ha.name / "images"
             if sub_img.exists():
                 for f in sub_img.iterdir():
                     shutil.copy2(f, ha / "images" / f.name)

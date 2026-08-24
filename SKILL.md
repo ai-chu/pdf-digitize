@@ -3,9 +3,13 @@ name: pdf-digitize
 description: PDF 书籍/课标/教材高保真采集（忠实副本）。把扫描版或电子版 PDF 转成带表格、图片、结构的 Markdown＋资产目录，并出质检报告。当用户提到"OCR 这本书""采集课标/教材""PDF 转 Markdown""扫描件解析""建忠实副本"时使用。
 ---
 
-# PDF 高保真采集（忠实副本）
+# PDF 高保真采集 → 三通道语料库
 
-目标产物不是"一串文字"，而是**可替代翻原书的结构化副本**：分级标题、Markdown/HTML 表格、切出的插图文件、阅读顺序正确的正文、页码映射、质检报告。
+目标产物不是"一串文字"，而是**可替代翻原书的三通道语料库**：
+① 精确通道——结构化忠实副本（分级标题/表格/切图/页码映射，grep 与页码直达）；
+② 向量通道——按块建的本地语义索引（BGE-M3＋LanceDB，检索结果引用到印刷页）；
+③ 结构通道——content_list 的书→页→块层级（供程序遍历）。
+外加质检报告与修补链。全链本地免费，语料库目录整体拷走即可用。
 
 ## 引擎与路线（2026-08 定版）
 
@@ -88,7 +92,19 @@ python3 ~/.claude/skills/pdf-digitize/scripts/crosscheck.py <PDF路径> <输出�
 - 密钥放 `~/.config/pdf-digitize/env`（权限 600），格式 `KEY=value` 每行一条
 - 产出 `交叉验证报告.md`：一致页自动通过；分歧页的两版输出存 `crosscheck_disputes/`，人眼只裁决这几页
 
-### 第 4 步：定版归档
+### 第 4 步：建向量索引（可选但推荐——工程一收尾工序）
+
+```bash
+python3 ~/.claude/skills/pdf-digitize/scripts/index.py build <采集输出目录根>     # 全库重建
+python3 ~/.claude/skills/pdf-digitize/scripts/index.py query <目录根> "容错教学怎么做" -k 5
+```
+
+按 content_list 块建 BGE-M3 向量索引（LanceDB 单目录存储 `_index/`，无服务器）。
+块即语义切片、自带印刷页坐标——命中结果直接给《书名》印刷页 NNN，胜过一般向量库的匿名 chunk。
+依赖 `sentence-transformers lancedb`（setup.sh 已含）；模型首跑自动下载约 2.3GB。
+何时用向量通道：语义模糊问题（"哪些地方讲了××"）；精确词句/页码仍用 grep 通道更快。
+
+### 第 5 步：定版归档
 
 MinerU 实际产出结构：
 
@@ -116,11 +132,17 @@ mermaid（层级连线正确）；数学公式转 LaTeX；脚注转上标；段�
 **已知限制**：
 - 美术体大字（如题号"问题 8"的艺术数字）进切图、不进标题文本——全文检索题号会漏，需要时从目录页或 content_list 的 image 块补
 - mermaid 图是模型对结构图的**转述**，定版引用前需与切出的原图人眼核对一遍
-- 速度约 20—30 秒/页（effort=high）：250 页一册约 1.5—2.5 小时，放后台跑，多本排队勿并行
+- 速度（2026-08-23 M5/32GB 实测）：hybrid-engine high 无 MLX 时批量实跑约 47 秒/页（250 页≈3.5h）；
+  **vlm-engine＋MLX 稳态约 16—20 秒/页（250 页≈1—1.5h），现为默认引擎**。
+  依赖互斥警告：mlx-vlm 需 transformers≥5.1、hybrid 需 <5——装了 mlx 后 hybrid 即不可用，
+  要用回 hybrid 须 `uv pip install "mineru[core]" "transformers<5" 并卸载 mlx-vlm`
+- 多本排队勿并行（内存）；临时改引擎：`MINERU_BACKEND=hybrid-engine bash digitize.sh …`
 
 ## 红线
 
 - **终审未过（交叉验证全一致 或 人眼核查通过 二者其一），不得对外宣称"忠实副本"**——只能叫「未终审草稿」
+- **图内文字口径（2026-08-23 Sean 定）**：插图/照片内的文字默认**不转写**进正文；但无论转写与否，
+  **图必须在场**——原图文件切出保存＋md 内嵌引用，缺一不可。交叉验证时此类差异判良性
 - **是否启动云端交叉验证必须由用户决定**：会上传书页且产生费用，不得替用户默认开启
 - 涉隐私或未公开的敏感材料不得走任何云端 API 路线，只许本地 MinerU
 - content_list.json 的 page_idx 是 **PDF 页码**，与书的印刷页码有偏移；引用原文时给两个页码
